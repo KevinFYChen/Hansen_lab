@@ -1,0 +1,9 @@
+bulk scRNA
+bulk 172257 9180
+scRNA 8877 167019
+0.9494673
+percentage of all samples kept: 0.857318685326161
+percentage of bulk samples kept: 0.43530636775647
+correctness among bulk samples kept: 0.949403925329453
+percentage of scRNA samples kept: 0.422012317569691
+correctness among scRNA samples kept: 0.949532678400873
