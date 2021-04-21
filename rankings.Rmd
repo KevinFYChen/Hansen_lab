@@ -1,0 +1,145 @@
+---
+title: "ranking of genes"
+author: "Kevin Chen"
+date: "4/10/2020"
+output: html_document
+---
+
+This document takes the data from the retina dataset from the HCA data portal and ranks each gene based on their level of expression across samples. 
+
+Only protein coding genes are being analyzed in this file. Protein coding genes were retrieved from Biomart https://www.ensembl.org/biomart/martview/8cc42f948cd01406c32bffb338277f5c using Ensembl Gene 99, dataset Hg38, filtered for "protein_coding" genes. 22799 results were found. Only 19769 of the 22799 genes were found in the retina dataset.
+
+```{r echo=T, results='hide', message=F}
+library("LoomExperiment")
+retina<-import("WongAdultRetina homo_sapiens 2019-11-08 16.13.loom")
+load("pgenes.rda") #load protein coding genes from BioMart
+wh<-lapply(pgenes, function(x) which(rowData(retina)$Accession==x))
+failed<-is.na(as.numeric(wh))
+wh<-as.numeric(wh[!failed])
+length(wh)
+```
+
+To make samples comparable, each sample in the retina expression data was first scaled by its library size then multiplied by 2000. This normalized result is stored in a matrix.
+
+```{r echo=T, results='hide'}
+target<-retina[wh,]
+m<-assay(target)
+colsums<-colSums(m)
+presult<-sweep(m*2000,2,FUN="/",STAT=colsums)
+presult[,which(!is.finite(presult[1,]))]<-0
+save(presult,file="proteinresult2.rda")
+```
+
+After normalizing the retina data, the sum of each row is calculated as well as the percentage of cells that are >0 in each row.
+```{r echo=T, results='hide'}
+accessions<-rowData(target)$Accession
+prsums<-rowSums(presult)
+names(prsums)<-accessions
+temp<-rowSums(presult>0)
+columns<-ncol(presult)
+prpercentage<-sapply(temp,function(x) x/columns)
+names(prpercentage)<-accessions
+```
+The row sums and the expression percentages are then ranked
+```{r echo=T, results='hide'}
+sortedprsums<-sort(prsums,decreasing=T)
+sortedpercentage<-sort(prpercentage, decreasing=T)
+```
+Now we look at the ranking of each of our genes of interest using sortedprsums and sortedpercentage
+```{r echo=T, results='hide'}
+tf<-read.csv("tf_gene_list.csv")
+tca<-read.csv("TCA_cycle_genes.csv")
+load("epiGenesDF_for_csv.rda")
+epigenes<-epiGenesDF_for_csv
+
+ranking<-function(x,ranks,Loom){
+  dataset<-rowData(Loom)
+  result<-list()
+  wh<-lapply(x,function(z) which(dataset$Gene==z))
+  accessions<-lapply(wh,function(z) dataset[z,]$Accession)
+  for(i in seq_len(length(accessions))){
+    result[[i]]<-which(names(ranks) %in% accessions[[i]])
+  }
+  names(result)<-x
+  result
+}
+
+ranking2<-function(x,ranks){
+  result<-lapply(x,function(z) which(names(ranks)==z))
+  names(result)<-x
+  result
+}
+
+tcarankingsum<-ranking(tca[,2],sortedprsums,target)
+tcarankingpercentage<-ranking(tca[,2],sortedpercentage,target)
+epirankingsum<-ranking(epigenes[,3],sortedprsums,target)
+epirankingpercentage<-ranking(epigenes[,3],sortedpercentage,target)
+tfrankingsum<-ranking2(tf[,1],sortedprsums)
+tfrankingpercentage<-ranking2(tf[,1],sortedpercentage)
+```
+The gene SDHD in the tca gene list has 2 Ensembl accession numbers. As a result, it has 2 ranks in both sortedprsums and sortedpercentage. For easier processing, the lower ranks are picked for both ranking.
+```{r echo=T, results='hide'}
+tcarankingsum["SDHD"]<-min(as.numeric(tcarankingsum[["SDHD"]]))
+tcarankingpercentage["SDHD"]<-min(as.numeric(tcarankingpercentage[["SDHD"]]))
+message("tcarankingsum= ",tcarankingsum["SDHD"],"tcarankingpercentage= ",tcarankingpercentage["SDHD"])
+```
+
+Some of the genes on the epigenes and tf lists were not found in the Retina dataset. Further, many of the genes have 0 expression level across all of the cells. To account for this, all genes that were not found in the Retina dataset was removed from the results. All of the genes that have 0 expression across all cells are set to the same ranking, 17544. Any ranking <17544 has an expression level >0.
+```{r echo=T, results='hide'}
+cutoff<-sum(sortedprsums>0)
+message(paste("the cutoff is",cutoff))
+processList<-function(x){
+  temp<-as.numeric(x)
+  failed<-is.na(temp)
+  temp<-x[!failed]
+  result<-list()
+  length(result)<-length(temp)
+  for(i in seq_len(length(temp))){
+    if(temp[i]>cutoff){
+      result[i]<-cutoff+1
+    }
+    else{
+      result[i]<-temp[i]
+    }
+  }
+  as.numeric(result)
+}
+
+tcaForSumPlot<-processList(tcarankingsum)
+tcaForPerPlot<-processList(tcarankingpercentage)
+epiForSumPlot<-processList(epirankingsum)
+epiForPerPlot<-processList(epirankingpercentage)
+tfForSumPlot<-processList(tfrankingsum)
+tfForPerPlot<-processList(tfrankingpercentage)
+```
+
+The results are then visualized using boxplots and stripcharts. rank 1 corresponds to the highest level of expression. The median for each type of genes and their corresponding expression level is indicated. GAPDH and POLR2A are used as a reference.
+```{r echo=T}
+ref<-sapply(c("ENSG00000181222","ENSG00000111640"), function(x) which(names(sortedprsums)==x))
+boxplot(tcaForSumPlot, epiForSumPlot,tfForSumPlot,ref, ylab="ranking", names=c("tca","epigenes","tf","ref"), main="ranking by sum")
+stripchart(list(tcaForSumPlot, epiForSumPlot,sample(tfForSumPlot,300,replace=F),ref), vertical=TRUE, add=TRUE, method="jitter", col='blue', pch="*")
+text(4,c(ref["ENSG00000111640"],ref["ENSG00000181222"]),labels=c("GAPDH","POLR2A"),adj=1,cex=0.7,col="red")
+summedians<-lapply(list(tcaForSumPlot,epiForSumPlot,tfForSumPlot),median)
+summedians<-lapply(summedians,ceiling)
+sumexprs<-lapply(summedians,function(x) sortedprsums[x])
+message(paste("the medians for tca, epigenes and tf are",paste(summedians,collapse=", "),"respectively, which corresponds to expression level",paste(as.numeric(sumexprs),collapse=", ")))
+```
+
+```{r echo=T}
+ref2<-sapply(c("ENSG00000181222","ENSG00000111640"), function(x) which(names(sortedpercentage)==x))
+boxplot(tcaForPerPlot, epiForPerPlot,tfForPerPlot,ref2, ylab="ranking", names=c("tca","epigenes","tf","ref"), main="ranking by percentage")
+stripchart(list(tcaForPerPlot, epiForPerPlot,sample(tfForPerPlot,300,replace=F),ref2), vertical=TRUE, add=TRUE, method="jitter", col='blue', pch="*")
+text(4,c(ref2["ENSG00000111640"],ref2["ENSG00000181222"]),labels=c("GAPDH","POLR2A"),adj=1,cex=0.7,col="red")
+permedians<-lapply(list(tcaForPerPlot,epiForPerPlot,tfForPerPlot),median)
+permedians<-lapply(permedians,ceiling)
+perexprs<-lapply(permedians,function(x) sortedpercentage[x])
+message(paste("the medians for tca, epigenes and tf are",paste(permedians,collapse=", "),"respectively, which corresponds to expression level",paste(as.numeric(perexprs),collapse=", ")))
+```
+
+
+
+
+
+
+
+
